@@ -8,6 +8,6 @@ int main(int argc, char* argv[]) {
     }
     std::string path = argv[1];
     JackAnalyzer analyzer(path);
-    analyzer.generateXML();
+    analyzer.generateVM();
     return 0;
 }

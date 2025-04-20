@@ -8,23 +8,25 @@
 
 JackAnalyzer::JackAnalyzer(std::string inputFilePath) : path(inputFilePath) {}
 
-void JackAnalyzer::generateXML() {
+void JackAnalyzer::generateVM() {
+    std::cout << "Began compiling files in " << path.string() << std::endl;
     if (std::filesystem::is_regular_file(path)) {
-        generateXMLForSingleFile(path);
+        generateVMForSingleFile(path);
     }
     else if (std::filesystem::is_directory(path)) {
         for (const auto& entry : std::filesystem::directory_iterator(path)) {
             if (entry.is_regular_file() && entry.path().extension().string() == ".jack") {
-                generateXMLForSingleFile(entry.path());
+                generateVMForSingleFile(entry.path());
             }
         }
     }
+    std::cout << "Finished compiling files in " << path.string() << std::endl;
 }
 
-void JackAnalyzer::generateXMLForSingleFile(std::filesystem::path inputPath) {
+void JackAnalyzer::generateVMForSingleFile(std::filesystem::path inputPath) {
     std::filesystem::path outputPath = inputPath.parent_path() / (inputPath.stem().string() + ".vm");
     CompilationEngine compilationEngine(inputPath, outputPath);
-    std::cout << "Beginning compilation of " << inputPath.filename().string() << std::endl;
+    std::cout << "Began compiling " << inputPath.filename().string() << std::endl;
     compilationEngine.compileClass();
-    std::cout << "Completed compilation of " << inputPath.filename().string() << std::endl;
+    std::cout << "Finished compiling " << inputPath.filename().string() << std::endl;
 }

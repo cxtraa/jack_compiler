@@ -5,9 +5,9 @@
 class JackAnalyzer {
 public:
     JackAnalyzer(std::string inputFilePath);
-    void generateXML();
+    void generateVM();
 private:
     bool isDir;
-    void generateXMLForSingleFile(std::filesystem::path inputPath);
+    void generateVMForSingleFile(std::filesystem::path inputPath);
     std::filesystem::path path;
 };

@@ -9,6 +9,7 @@
 
 class CompilationEngine {
 public:
+    // Takes path to single .jack file, and one path to .vm file to write translated code
     CompilationEngine(std::filesystem::path inputPath, std::filesystem::path outputPath);
 
     void compileClass();
@@ -30,25 +31,23 @@ public:
 
 private:
     JackTokenizer tokenizer;
-
     SymbolTable classSymbolTable;
     SymbolTable subroutineSymbolTable;
-
     VMWriter vmWriter;
-
     std::ifstream inputStream;
 
-    int labelNumber;
+    int labelNumber; // for unique labels in IF, WHILE
     std::string currentClass;
 
     void writeKeyWord();
     void writeSymbol();
     void writeIntConst();
     void writeStrConst();
-    void writeVar(std::string type, Kind kind, bool isDeclaration, bool isClass);
     void writeIdentifier();
     void writeType();
     void writeKeyWordConst();
+    void compileCurrentObjectSubroutineCall(std::string name);
+    void compileClassVarSubroutineCall(std::string name);
     bool isType();
     bool isStatement();
     bool isTerm();

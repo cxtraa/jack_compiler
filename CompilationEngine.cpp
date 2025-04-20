@@ -71,6 +71,9 @@ void CompilationEngine::compileClassVarDec() {
 void CompilationEngine::compileSubroutineDec() {
     subroutineSymbolTable.reset();
     KeyWord functionType = tokenizer.keyWord();
+    if (functionType == KW_METHOD) {
+        subroutineSymbolTable.define("this", currentClass, ARG);
+    }
     writeKeyWord(); // constructor | function | method
     writeType(); // void | type
     std::string subroutineName = currentClass + "." + tokenizer.identifier();
@@ -87,7 +90,6 @@ void CompilationEngine::compileSubroutineDec() {
     int nLocalVars = subroutineSymbolTable.varCount(VAR);
     vmWriter.writeFunction(subroutineName, nLocalVars);
     if (functionType == KW_METHOD) {
-        subroutineSymbolTable.define("this", currentClass, ARG);
         vmWriter.writePush("argument", 0);
         vmWriter.writePop("pointer", 0);
     }
@@ -221,9 +223,9 @@ void CompilationEngine::compileWhile() {
     writeKeyWord(); // while
     writeSymbol(); // (
     compileExpression();
+    writeSymbol(); // )
     vmWriter.writeArithmetic("not");
     vmWriter.writeIf(L2);
-    writeSymbol(); // )
     writeSymbol(); // {
     compileStatements();
     vmWriter.writeGoTo(L1);
@@ -253,35 +255,13 @@ void CompilationEngine::compileReturn() {
 void CompilationEngine::compileSubroutineCall() {
     std::string name = tokenizer.identifier();
     writeIdentifier(); // name
-
     // (className | varName).subroutineName
     if (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == '.') { 
-        bool isStatic = !(classSymbolTable.exists(name) || subroutineSymbolTable.exists(name));
-        std::string functionName;
-        if (!isStatic) {
-            // varName
-            vmWriter.writePush(kindToStr(kindOf(name)), indexOf(name));
-            functionName += typeOf(name);
-        }
-        else {
-            // className
-            functionName += name;
-        }
-        writeSymbol(); // .
-        functionName += "." + tokenizer.identifier();
-        writeIdentifier(); // subroutineName
-        writeSymbol(); // (
-        int numExpressions = compileExpressionList();
-        writeSymbol(); // )
-        vmWriter.writeCall(functionName, isStatic ? numExpressions : numExpressions + 1);
+        compileClassVarSubroutineCall(name);
     }
     // subroutineName(expressionList)
     else {
-        vmWriter.writePush("pointer", 0);
-        writeSymbol(); // (
-        int numExpressions = compileExpressionList();
-        writeSymbol(); // )
-        vmWriter.writeCall(currentClass + "." + name, numExpressions + 1);
+        compileCurrentObjectSubroutineCall(name);
     }
 }
 
@@ -311,29 +291,11 @@ void CompilationEngine::compileTerm() {
         tokenizer.advance();
         // subroutineName(expressionList)
         if (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == '(') {
-            writeSymbol(); // (
-            int numExpressions = compileExpressionList();
-            writeSymbol(); // )
-            vmWriter.writeCall(currentClass + "." + name, numExpressions);
+            compileCurrentObjectSubroutineCall(name);
         }
         // (className|varName).subroutineName(expressionList)
         else if (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == '.') {
-            bool isStatic = !(classSymbolTable.exists(name) || subroutineSymbolTable.exists(name));
-            std::string functionName;
-            if (!isStatic) {
-                vmWriter.writePush(kindToStr(kindOf(name)), indexOf(name));
-                functionName += typeOf(name);
-            }
-            else {
-                functionName += name;
-            }
-            writeSymbol(); // .
-            functionName += "." + tokenizer.identifier();
-            tokenizer.advance(); // subroutineName
-            writeSymbol(); // (
-            int numExpressions = compileExpressionList();
-            writeSymbol(); // )
-            vmWriter.writeCall(functionName, isStatic ? numExpressions : numExpressions + 1);
+            compileClassVarSubroutineCall(name);
         }
         // varName[expression]
         else if (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == '[') {
@@ -346,7 +308,6 @@ void CompilationEngine::compileTerm() {
             vmWriter.writePush("that", 0);
         }
         else {
-            // outputStream << "<identifier category=\"" << kindToStr(kindOf(name)) << "\" index=\"" << indexOf(name) << "\" usage=\"used\">" << name << "</identifier>" << std::endl;
             vmWriter.writePush(kindToStr(kindOf(name)), indexOf(name));
         }
     }
@@ -363,6 +324,33 @@ void CompilationEngine::compileTerm() {
         compileTerm();
         vmWriter.writeArithmetic(op);
     }
+}
+
+void CompilationEngine::compileCurrentObjectSubroutineCall(std::string name) {
+    vmWriter.writePush("pointer", 0);
+    writeSymbol(); // (
+    int numExpressions = compileExpressionList();
+    writeSymbol(); // )
+    vmWriter.writeCall(currentClass + "." + name, numExpressions + 1);
+}
+
+void CompilationEngine::compileClassVarSubroutineCall(std::string name) {
+    bool isStatic = !(classSymbolTable.exists(name) || subroutineSymbolTable.exists(name)); // is this a call to static function?
+    std::string functionName;
+    if (!isStatic) {
+        vmWriter.writePush(kindToStr(kindOf(name)), indexOf(name)); // push object to stack
+        functionName += typeOf(name);
+    }
+    else {
+        functionName += name;
+    }
+    writeSymbol(); // .
+    functionName += "." + tokenizer.identifier();
+    tokenizer.advance(); // subroutineName
+    writeSymbol(); // (
+    int numExpressions = compileExpressionList();
+    writeSymbol(); // )
+    vmWriter.writeCall(functionName, isStatic ? numExpressions : numExpressions + 1); // if not static, 'this' is an extra arg
 }
 
 int CompilationEngine::compileExpressionList() {
@@ -509,6 +497,7 @@ std::string CompilationEngine::binaryOp() {
         case '=': return "eq";
         default : std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected binary operator but got " << tokenizer.currentToken << std::endl;
     }
+    return "";
 }
 
 std::string CompilationEngine::unaryOp() {
@@ -520,6 +509,7 @@ std::string CompilationEngine::unaryOp() {
         case '~' : return "not";
         default : std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected unary operator but got " << tokenizer.currentToken << std::endl;
     }
+    return "";
 }
 
 bool CompilationEngine::isTerm() {
