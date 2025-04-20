@@ -12,6 +12,7 @@ public:
     void advance();
     TokenType tokenType();
     KeyWord keyWord();
+    int getLineNumber();
     char symbol();
     std::string type();
     std::string identifier();
@@ -24,5 +25,6 @@ private:
     bool isSymbol(char c);
     std::ifstream input;
     char currentChar;
+    int lineNumber;
     void skipWhitespaceAndComments();
 };

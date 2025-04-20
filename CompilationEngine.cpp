@@ -6,11 +6,10 @@
 #include <vector>
 #include <algorithm>
 
-CompilationEngine::CompilationEngine(std::filesystem::path inputPath, std::filesystem::path outputPath) : tokenizer(inputPath), classSymbolTable(), subroutineSymbolTable() {
+CompilationEngine::CompilationEngine(std::filesystem::path inputPath, std::filesystem::path outputPath) : tokenizer(inputPath), classSymbolTable(), subroutineSymbolTable(), labelNumber(0), vmWriter(outputPath) {
+    currentClass = "Main";
     inputStream = std::ifstream(inputPath);
     if (!inputStream) throw std::runtime_error("CompilationEngine: the input file could not be read from.");
-    outputStream = std::ofstream(outputPath); 
-    if (!outputStream) throw std::runtime_error("CompilationEngine: the output file could not be created/written to.");
 
     keyWordToStr = {
         {KW_CLASS, "class"},
@@ -41,100 +40,106 @@ CompilationEngine::CompilationEngine(std::filesystem::path inputPath, std::files
 
 void CompilationEngine::compileClass() {
     classSymbolTable.reset();
-    outputStream << "<class>" << std::endl;
-    writeKeyWord();
-    outputStream << "<identifier category=\"class\" index=\"-1\" usage=\"declared\">" << tokenizer.identifier() << "</identifier>" << std::endl;
-    tokenizer.advance();
-    writeSymbol();
+    writeKeyWord(); // class
+    currentClass = tokenizer.identifier();
+    writeIdentifier(); // className
+    writeSymbol(); // {
     while (tokenizer.tokenType() == KEYWORD && (tokenizer.keyWord() == KW_STATIC || tokenizer.keyWord() == KW_FIELD)) {
         compileClassVarDec();
     }
     while (tokenizer.tokenType() == KEYWORD && (tokenizer.keyWord() == KW_CONSTRUCTOR || tokenizer.keyWord() == KW_FUNCTION || tokenizer.keyWord() == KW_METHOD)) {
         compileSubroutineDec();
     }
-    writeSymbol();
-    outputStream << "</class>" << std::endl;
+    writeSymbol(); // }
 }
 
 void CompilationEngine::compileClassVarDec() {
-    outputStream << "<classVarDec>" << std::endl;
-    Kind varKind = tokenizer.keyWord() == KW_STATIC ? STATIC : FIELD;
-    writeKeyWord();
-    std::string varType = tokenizer.type();
-    writeType();
-    writeVar(varType, varKind, true, true);
+    Kind kind = tokenizer.keyWord() == KW_STATIC ? STATIC : FIELD;
+    writeKeyWord(); // static | field
+    std::string type = tokenizer.type();
+    writeType(); // type
+    classSymbolTable.define(tokenizer.identifier(), type, kind);
+    writeIdentifier();
     while (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == ',') {
-        writeSymbol();
-        writeVar(varType, varKind, true, true);
+        writeSymbol(); // ,
+        classSymbolTable.define(tokenizer.identifier(), type, kind);
+        writeIdentifier(); // varName
     }
-    writeSymbol();
-    outputStream << "</classVarDec>" << std::endl;
+    writeSymbol(); // ;
 }
 
 void CompilationEngine::compileSubroutineDec() {
     subroutineSymbolTable.reset();
-    outputStream << "<subroutineDec>" << std::endl;
-    writeKeyWord(); // constructor / function / method
-    if (tokenizer.tokenType() == KEYWORD && tokenizer.keyWord() == KW_VOID) {
-        writeKeyWord();
-    }
-    else {
-        writeType();
-    }
-    outputStream << "<identifier category=\"subroutine\" index=\"-1\" usage=\"declared\">" << tokenizer.identifier() << "</identifier>" << std::endl;
-    tokenizer.advance();
+    KeyWord functionType = tokenizer.keyWord();
+    writeKeyWord(); // constructor | function | method
+    writeType(); // void | type
+    std::string subroutineName = currentClass + "." + tokenizer.identifier();
+    writeIdentifier(); // subroutineName
     writeSymbol(); // '('
-    compileParameterList();
+    int numParameters = compileParameterList();
     writeSymbol(); // ')'
-    compileSubroutineBody();
-    outputStream << "</subroutineDec>" << std::endl;
-}
 
-void CompilationEngine::compileParameterList() {
-    outputStream << "<parameterList>" << std::endl;
-    if (isType()) { // (type varName)
-        std::string varType = tokenizer.type();
-        writeType();
-        writeVar(varType, ARG, true, false);
-    }
-    while (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == ',') { // (',' type varName)*
-        writeSymbol();
-        std::string varType = tokenizer.type();
-        writeType();
-        writeVar(varType, ARG, true, false);
-    }
-    outputStream << "</parameterList>" << std::endl;
-}
-
-void CompilationEngine::compileSubroutineBody() {
-    outputStream << "<subroutineBody>" << std::endl;
-    writeSymbol(); // '{'
+    // SUBROUTINE BODY
+    writeSymbol(); // {
     while (tokenizer.tokenType() == KEYWORD && tokenizer.keyWord() == KW_VAR) {
         compileVarDec();
     }
+    int nLocalVars = subroutineSymbolTable.varCount(VAR);
+    vmWriter.writeFunction(subroutineName, nLocalVars);
+    if (functionType == KW_METHOD) {
+        subroutineSymbolTable.define("this", currentClass, ARG);
+        vmWriter.writePush("argument", 0);
+        vmWriter.writePop("pointer", 0);
+    }
+    else if (functionType == KW_CONSTRUCTOR) {
+        int nFieldVars = classSymbolTable.varCount(FIELD);
+        vmWriter.writePush("constant", nFieldVars);
+        vmWriter.writeCall("Memory.alloc", 1);
+        vmWriter.writePop("pointer", 0);
+    }
     compileStatements();
-    writeSymbol(); // '}'
-    outputStream << "</subroutineBody>" << std::endl;
+    if (functionType == KW_CONSTRUCTOR) {
+        vmWriter.writePush("pointer", 0);
+    }
+    writeSymbol(); // }
+}
+
+int CompilationEngine::compileParameterList() {
+    int numParameters = 0;
+    if (isType()) { // (type varName)
+        numParameters++;
+        std::string type = tokenizer.type();
+        writeType(); // type
+        subroutineSymbolTable.define(tokenizer.identifier(), type, ARG);
+        writeIdentifier();
+    }
+    while (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == ',') { // (',' type varName)*
+        numParameters++;
+        writeSymbol(); // ,
+        std::string type = tokenizer.type();
+        writeType(); // type
+        subroutineSymbolTable.define(tokenizer.identifier(), type, ARG);
+        writeIdentifier();
+    }
+    return numParameters;
 }
 
 void CompilationEngine::compileVarDec() {
-    outputStream << "<varDec>" << std::endl;
-    writeKeyWord(); // 'var'
+    writeKeyWord(); // var
 
     std::string type = tokenizer.type();
     writeType(); // type
-    writeVar(type, VAR, true, false);
-
+    subroutineSymbolTable.define(tokenizer.identifier(), type, VAR);
+    writeIdentifier(); // varName
     while (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == ',') {
-        writeSymbol();
-        writeVar(type, VAR, true, false);
+        writeSymbol(); // ,
+        subroutineSymbolTable.define(tokenizer.identifier(), type, VAR);
+        writeIdentifier(); // varName
     }
     writeSymbol(); // ;
-    outputStream << "</varDec>" << std::endl;
 }
 
 void CompilationEngine::compileStatements() {
-    outputStream << "<statements>" << std::endl;
     while (isStatement()) {
         if (tokenizer.keyWord() == KW_LET) {
             compileLet();
@@ -148,116 +153,149 @@ void CompilationEngine::compileStatements() {
         else if (tokenizer.keyWord() == KW_DO) {
             compileDo();
         }
-        else {
+        else if (tokenizer.keyWord() == KW_RETURN) {
             compileReturn();
         }
     }
-    outputStream << "</statements>" << std::endl;
 }
 
 void CompilationEngine::compileLet() {
-    outputStream << "<letStatement>" << std::endl;
     writeKeyWord(); // let
-    std::string varName = tokenizer.identifier();
-    if (classSymbolTable.exists(varName)) {
-        writeVar(classSymbolTable.typeOf(varName), classSymbolTable.kindOf(varName), false, true);
-    }
-    else if (subroutineSymbolTable.exists(varName)) {
-        writeVar(subroutineSymbolTable.typeOf(varName), subroutineSymbolTable.kindOf(varName), false, false);
+    bool isArrayAccess = false;
+    std::string name = tokenizer.identifier();
+    writeIdentifier(); // go forward
+    if (!classSymbolTable.exists(name) && !subroutineSymbolTable.exists(name)) {
+        throw std::runtime_error("Attempted to assign to an undefined variable.");
     }
     if (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == '[') {
+        isArrayAccess = true;
+        vmWriter.writePush(kindToStr(kindOf(name)), indexOf(name));
         writeSymbol(); // [
         compileExpression();
         writeSymbol(); // ]
+        vmWriter.writeArithmetic("add");
     }
     writeSymbol(); // =
     compileExpression();
+    if (isArrayAccess) {
+        vmWriter.writePop("temp", 0);
+        vmWriter.writePop("pointer", 1);
+        vmWriter.writePush("temp", 0);
+        vmWriter.writePop("that", 0);
+    }
+    else {
+        vmWriter.writePop(kindToStr(kindOf(name)), indexOf(name));
+    }
     writeSymbol(); // ;
-    outputStream << "</letStatement>" << std::endl;
 }
 
 void CompilationEngine::compileIf() {
-    outputStream << "<ifStatement>" << std::endl;
     writeKeyWord(); // if
     writeSymbol(); // (
     compileExpression();
     writeSymbol(); // )
     writeSymbol(); // {
+    vmWriter.writeArithmetic("not");
+    std::string L1 = "L" + std::to_string(2*labelNumber);
+    std::string L2 = "L" + std::to_string(2*labelNumber + 1);
+    labelNumber++;
+    vmWriter.writeIf(L1);
     compileStatements();
+    vmWriter.writeGoTo(L2);
     writeSymbol(); // }
+    vmWriter.writeLabel(L1);
     if (tokenizer.tokenType() == KEYWORD && tokenizer.keyWord() == KW_ELSE) {
         writeKeyWord(); // else
         writeSymbol(); // {
         compileStatements();
         writeSymbol(); // }
     }    
-    outputStream << "</ifStatement>" << std::endl;
+    vmWriter.writeLabel(L2);
 }
 
 void CompilationEngine::compileWhile() {
-    outputStream << "<whileStatement>" << std::endl;
+    std::string L1 = "L" + std::to_string(2*labelNumber);
+    std::string L2 = "L" + std::to_string(2*labelNumber + 1);
+    labelNumber++;
+    vmWriter.writeLabel(L1);
     writeKeyWord(); // while
     writeSymbol(); // (
     compileExpression();
+    vmWriter.writeArithmetic("not");
+    vmWriter.writeIf(L2);
     writeSymbol(); // )
     writeSymbol(); // {
     compileStatements();
+    vmWriter.writeGoTo(L1);
+    vmWriter.writeLabel(L2);
     writeSymbol(); // } 
-    outputStream << "</whileStatement>" << std::endl;
 }
 
 void CompilationEngine::compileDo() {
-    outputStream << "<doStatement>" << std::endl;
     writeKeyWord(); // do
     compileSubroutineCall();
-    writeSymbol(); // ;    
-    outputStream << "</doStatement>" << std::endl;
+    writeSymbol(); // ;
+    vmWriter.writePop("temp", 0); // pop off returned value    
 }
 
 void CompilationEngine::compileReturn() {
-    outputStream << "<returnStatement>" << std::endl;
-    writeKeyWord(); // return
+    tokenizer.advance(); // return
     if (tokenizer.tokenType() != SYMBOL || tokenizer.symbol() != ';') {
         compileExpression();
     }
+    else {
+        vmWriter.writePush("constant", 0);
+    }
     writeSymbol(); // ;
-    outputStream << "</returnStatement>" << std::endl;
+    vmWriter.writeReturn();
 }
 
 void CompilationEngine::compileSubroutineCall() {
     std::string name = tokenizer.identifier();
-    tokenizer.advance();
-    if (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == '.') { // (className | varName).subroutineName
-        if (classSymbolTable.exists(name) || subroutineSymbolTable.exists(name)) {
-            outputStream << "<identifier category=\"" << kindToStr(kindOf(name)) << "\" index=\"" << indexOf(name) << "\" usage=\"used\">" << name << "</identifier>" << std::endl;
+    writeIdentifier(); // name
+
+    // (className | varName).subroutineName
+    if (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == '.') { 
+        bool isStatic = !(classSymbolTable.exists(name) || subroutineSymbolTable.exists(name));
+        std::string functionName;
+        if (!isStatic) {
+            // varName
+            vmWriter.writePush(kindToStr(kindOf(name)), indexOf(name));
+            functionName += typeOf(name);
         }
         else {
-            outputStream << "<identifier category=\"class\"" << " index=\"" << indexOf(name) << "\" usage=\"used\">" << name << "</identifier>" << std::endl;
+            // className
+            functionName += name;
         }
         writeSymbol(); // .
-        outputStream << "<identifier category=\"subroutine\" index=\"-1\" usage=\"used\">" << tokenizer.identifier() << "</identifier>" << std::endl;
-        tokenizer.advance();
+        functionName += "." + tokenizer.identifier();
+        writeIdentifier(); // subroutineName
+        writeSymbol(); // (
+        int numExpressions = compileExpressionList();
+        writeSymbol(); // )
+        vmWriter.writeCall(functionName, isStatic ? numExpressions : numExpressions + 1);
     }
+    // subroutineName(expressionList)
     else {
-        outputStream << "<identifier category=\"subroutine\" index=\"-1\" usage=\"used\">" << name << "</identifier>" << std::endl;
+        vmWriter.writePush("pointer", 0);
+        writeSymbol(); // (
+        int numExpressions = compileExpressionList();
+        writeSymbol(); // )
+        vmWriter.writeCall(currentClass + "." + name, numExpressions + 1);
     }
-    writeSymbol(); // (
-    compileExpressionList();
-    writeSymbol(); // )
 }
 
 void CompilationEngine::compileExpression() {
-    outputStream << "<expression>" << std::endl;
     compileTerm();
     while (tokenizer.tokenType() == SYMBOL && isOp()) {
-        writeSymbol(); // op
+        std::string op = binaryOp();
+        writeSymbol();
         compileTerm();
+        vmWriter.writeArithmetic(op);
     }
-    outputStream << "</expression>" << std::endl;
 }
 
 void CompilationEngine::compileTerm() {
-    outputStream << "<term>" << std::endl;
     TokenType tt = tokenizer.tokenType();
     if (tt == INT_CONST) {
         writeIntConst();
@@ -266,149 +304,165 @@ void CompilationEngine::compileTerm() {
         writeStrConst();
     }
     else if (isKeyWordConstant()) {
-        writeKeyWord();
+        writeKeyWordConst();
     }
     else if (tt == IDENTIFIER) {
         std::string name = tokenizer.identifier();
         tokenizer.advance();
         // subroutineName(expressionList)
         if (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == '(') {
-            outputStream << "<identifier category=\"subroutine\" index=\"-1\" usage=\"used\">" << name << "</identifier>" << std::endl;
-            writeSymbol();
-            compileExpressionList();
-            writeSymbol();
+            writeSymbol(); // (
+            int numExpressions = compileExpressionList();
+            writeSymbol(); // )
+            vmWriter.writeCall(currentClass + "." + name, numExpressions);
         }
         // (className|varName).subroutineName(expressionList)
         else if (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == '.') {
-            if (classSymbolTable.exists(name) || subroutineSymbolTable.exists(name)) {
-                outputStream << "<identifier category=\"" << kindToStr(kindOf(name)) << "\" index=\"" << indexOf(name) << "\" usage=\"used\">" << name << "</identifier>" << std::endl;
+            bool isStatic = !(classSymbolTable.exists(name) || subroutineSymbolTable.exists(name));
+            std::string functionName;
+            if (!isStatic) {
+                vmWriter.writePush(kindToStr(kindOf(name)), indexOf(name));
+                functionName += typeOf(name);
             }
             else {
-                outputStream << "<identifier category=\"class\"" << " index=\"" << indexOf(name) << "\" usage=\"used\">" << name << "</identifier>" << std::endl;
+                functionName += name;
             }
             writeSymbol(); // .
-            outputStream << "<identifier category=\"subroutine\" index=\"-1\" usage=\"used\">" << tokenizer.identifier() << "</identifier>" << std::endl;
-            tokenizer.advance();
-            writeSymbol();
-            compileExpressionList();
-            writeSymbol();
+            functionName += "." + tokenizer.identifier();
+            tokenizer.advance(); // subroutineName
+            writeSymbol(); // (
+            int numExpressions = compileExpressionList();
+            writeSymbol(); // )
+            vmWriter.writeCall(functionName, isStatic ? numExpressions : numExpressions + 1);
         }
         // varName[expression]
         else if (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == '[') {
-            outputStream << "<identifier category=\"" << kindToStr(kindOf(name)) << "\" index=\"" << indexOf(name) << "\" usage=\"used\">" << name << "</identifier>" << std::endl;
+            vmWriter.writePush(kindToStr(kindOf(name)), indexOf(name));
             writeSymbol(); // [
             compileExpression(); 
             writeSymbol(); // ]
+            vmWriter.writeArithmetic("add");
+            vmWriter.writePop("pointer", 1);
+            vmWriter.writePush("that", 0);
         }
         else {
-            outputStream << "<identifier category=\"" << kindToStr(kindOf(name)) << "\" index=\"" << indexOf(name) << "\" usage=\"used\">" << name << "</identifier>" << std::endl;
+            // outputStream << "<identifier category=\"" << kindToStr(kindOf(name)) << "\" index=\"" << indexOf(name) << "\" usage=\"used\">" << name << "</identifier>" << std::endl;
+            vmWriter.writePush(kindToStr(kindOf(name)), indexOf(name));
         }
     }
     else if (tt == SYMBOL && tokenizer.symbol() == '(') {
         // (expression)
-        writeSymbol();
+        writeSymbol(); // (
         compileExpression();
-        writeSymbol();
+        writeSymbol(); // )
     }
     else if (tt == SYMBOL && (tokenizer.symbol() == '-' || tokenizer.symbol() == '~')) {
         // unaryOp term
-        writeSymbol();
+        std::string op = unaryOp();
+        writeSymbol(); // op
         compileTerm();
+        vmWriter.writeArithmetic(op);
     }
-    outputStream << "</term>" << std::endl;
 }
 
-void CompilationEngine::compileExpressionList() {
-    outputStream << "<expressionList>" << std::endl;
+int CompilationEngine::compileExpressionList() {
+    int numExpressions = 0;
     if (tokenizer.tokenType() != SYMBOL || tokenizer.symbol() != ')') {
         compileExpression();
+        numExpressions++;
         while (tokenizer.tokenType() == SYMBOL && tokenizer.symbol() == ',') {
-            writeSymbol(); // ,
+            tokenizer.advance(); // ,
             compileExpression();
+            numExpressions++;
         }
     }
-    outputStream << "</expressionList>" << std::endl;
+    return numExpressions;
 }
 
 void CompilationEngine::writeKeyWord() {
     if (tokenizer.tokenType() != KEYWORD) {
-        std::cerr << "Error: expected KEYWORD." << std::endl;
+        std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected KEYWORD but got " << tokenizer.currentToken << std::endl;
     }
-    outputStream << "<keyword>" << keyWordToStr.at(tokenizer.keyWord()) << "</keyword>" << std::endl;
+    tokenizer.advance();
+}
+
+void CompilationEngine::writeType() {
+    if (tokenizer.tokenType() != KEYWORD && tokenizer.tokenType() != IDENTIFIER) {
+        std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected type but got " << tokenizer.currentToken << std::endl;
+    }
     tokenizer.advance();
 }
 
 void CompilationEngine::writeSymbol() {
     if (tokenizer.tokenType() != SYMBOL) {
-        std::cerr << "Error: expected SYMBOL but got " << tokenizer.currentToken << std::endl;
+        std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected SYMBOL but got " << tokenizer.currentToken << std::endl;
+        tokenizer.advance();
     }
-    std::string symbol{tokenizer.symbol()};
-    if (symbol == "<") {
-        symbol = "&lt;";
+    tokenizer.advance();
+}
+
+void CompilationEngine::writeIdentifier() {
+    if (tokenizer.tokenType() != IDENTIFIER) {
+        std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected identifier but got " << tokenizer.currentToken << std::endl;
     }
-    else if (symbol == ">") {
-        symbol = "&gt;";
-    }
-    else if (symbol == "&") {
-        symbol = "&amp;";
-    }
-    else if (symbol == "\"") {
-        symbol = "&quot;";
-    } 
-    outputStream << "<symbol>" << symbol << "</symbol>" << std::endl;
     tokenizer.advance();
 }
 
 void CompilationEngine::writeIntConst() {
     if (tokenizer.tokenType() != INT_CONST) {
-        std::cerr << "Error: expected INT_CONST." << std::endl;
+        std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected INT_CONST but got " << tokenizer.currentToken << std::endl;
     }
-    outputStream << "<integerConstant>" << tokenizer.intVal() << "</integerConstant>" << std::endl;
+    vmWriter.writePush("constant", tokenizer.intVal());
     tokenizer.advance();
 }
 
 void CompilationEngine::writeStrConst() {
     if (tokenizer.tokenType() != STRING_CONST) {
-        std::cerr << "Error: expected STR_CONST." << std::endl;
+        std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected STR_CONST but got " << tokenizer.currentToken << std::endl;
     }
-    outputStream << "<stringConstant>" << tokenizer.stringVal() << "</stringConstant>" << std::endl;
-    tokenizer.advance();
-}
-
-void CompilationEngine::writeVar(std::string type, Kind kind, bool isDeclaration, bool isClass) {
-    if (tokenizer.tokenType() != IDENTIFIER) {
-        std::cerr << "Error: expected IDENTIFIER." << std::endl;
+    std::string str = tokenizer.stringVal();
+    vmWriter.writePush("constant", str.length());
+    vmWriter.writeCall("String.new", 1);
+    for (int i = 0; i < str.length(); i++) {
+        int c = str[i];
+        vmWriter.writePush("constant", c);
+        vmWriter.writeCall("String.appendChar", 2);
     }
-    std::string name = tokenizer.identifier();
-    if (isDeclaration) isClass ? classSymbolTable.define(name, type, kind) : subroutineSymbolTable.define(name, type, kind);
-    int index = indexOf(name);
-    std::string declarationString = isDeclaration ? "declared" : "used";
-    outputStream << "<identifier category=\"" << kindToStr(kind) << "\" index=\"" << index << "\" usage=\"" << declarationString << "\">" << name << "</identifier>" << std::endl;
     tokenizer.advance();
 }
 
 std::string CompilationEngine::kindToStr(Kind kind) {
     switch (kind) {
         case STATIC: return "static";
-        case FIELD: return "field";
-        case ARG: return "arg";
-        case VAR: return "var";
+        case FIELD: return "this";
+        case ARG: return "argument";
+        case VAR: return "local";
         case NONE: return "-1";
         default: return "-1";
     }
 }
 
-void CompilationEngine::writeType() {
-    if (!isType()) {
-        std::cerr << "Error: expected type." << std::endl;
+void CompilationEngine::writeKeyWordConst() {
+    if (tokenizer.tokenType() != KEYWORD) {
+        std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected KEYWORD_CONST but got " << tokenizer.currentToken << std::endl;
     }
-    if (tokenizer.tokenType() == KEYWORD) {
-        writeKeyWord();
+    if (tokenizer.keyWord() == KW_TRUE) {
+        vmWriter.writePush("constant", 0);
+        vmWriter.writeArithmetic("not");
+    }
+    else if (tokenizer.keyWord() == KW_FALSE) {
+        vmWriter.writePush("constant", 0);
+    }
+    else if (tokenizer.keyWord() == KW_NULL) {
+        vmWriter.writePush("constant", 0);
+    }
+    else if (tokenizer.keyWord() == KW_THIS) {
+        vmWriter.writePush("pointer", 0);
     }
     else {
-        outputStream << "<identifier category=\"class\" index=\"-1\" usage=\"used\">" << tokenizer.identifier() << "</identifier>" << std::endl;
-        tokenizer.advance();
+        std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected KEYWORD_CONST but got " << tokenizer.currentToken << std::endl;
     }
+    tokenizer.advance();
 }
 
 bool CompilationEngine::isType() {
@@ -439,37 +493,66 @@ bool CompilationEngine::isUnaryOp() {
     return (isOp() && (tokenizer.symbol() == '-' || tokenizer.symbol() == '~')); 
 }
 
+std::string CompilationEngine::binaryOp() {
+    if (tokenizer.tokenType() != SYMBOL) {
+        std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected binary operator but got " << tokenizer.currentToken << std::endl;
+    }
+    switch (tokenizer.symbol()) {
+        case '+': return "add";
+        case '-': return "sub";
+        case '*': return "call Math.multiply 2";
+        case '/': return "call Math.divide 2";
+        case '&': return "and";
+        case '|': return "or";
+        case '<': return "lt";
+        case '>': return "gt";
+        case '=': return "eq";
+        default : std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected binary operator but got " << tokenizer.currentToken << std::endl;
+    }
+}
+
+std::string CompilationEngine::unaryOp() {
+    if (tokenizer.tokenType() != SYMBOL) {
+        std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected unary operator but got " << tokenizer.currentToken << std::endl;
+    }
+    switch (tokenizer.symbol()) {
+        case '-' : return "neg";
+        case '~' : return "not";
+        default : std::cerr << "Error at line " << tokenizer.getLineNumber() << ": expected unary operator but got " << tokenizer.currentToken << std::endl;
+    }
+}
+
 bool CompilationEngine::isTerm() {
     TokenType tt = tokenizer.tokenType();
     return (tt == INT_CONST || tt == STRING_CONST || isKeyWordConstant() || tt == IDENTIFIER || isUnaryOp());
 }
 
 Kind CompilationEngine::kindOf(std::string name) {
-    if (classSymbolTable.exists(name)) {
-        return classSymbolTable.kindOf(name);
-    }
-    else if (subroutineSymbolTable.exists(name)) {
+    if (subroutineSymbolTable.exists(name)) {
         return subroutineSymbolTable.kindOf(name);
+    }
+    else if (classSymbolTable.exists(name)) {
+        return classSymbolTable.kindOf(name);
     }
     return NONE;
 }
 
 int CompilationEngine::indexOf(std::string name) {
-    if (classSymbolTable.exists(name)) {
-        return classSymbolTable.indexOf(name);
-    }
-    else if (subroutineSymbolTable.exists(name)) {
+    if (subroutineSymbolTable.exists(name)) {
         return subroutineSymbolTable.indexOf(name);
+    }
+    else if (classSymbolTable.exists(name)) {
+        return classSymbolTable.indexOf(name);
     }
     return -1;
 }
 
 std::string CompilationEngine::typeOf(std::string name) {
-    if (classSymbolTable.exists(name)) {
-        return classSymbolTable.typeOf(name);
-    }
-    else if (subroutineSymbolTable.exists(name)) {
+    if (subroutineSymbolTable.exists(name)) {
         return subroutineSymbolTable.typeOf(name);
+    }
+    else if (classSymbolTable.exists(name)) {
+        return classSymbolTable.typeOf(name);
     }
     return std::string();
 }

@@ -5,6 +5,7 @@
 #include "JackTokenizer.hpp"
 #include "Enums.hpp"
 #include "SymbolTable.hpp"
+#include "VMWriter.hpp"
 
 class CompilationEngine {
 public:
@@ -13,7 +14,7 @@ public:
     void compileClass();
     void compileClassVarDec();
     void compileSubroutineDec();
-    void compileParameterList();
+    int compileParameterList();
     void compileSubroutineBody();
     void compileVarDec();
     void compileStatements();
@@ -25,7 +26,7 @@ public:
     void compileSubroutineCall();
     void compileExpression();
     void compileTerm();
-    void compileExpressionList();
+    int compileExpressionList();
 
 private:
     JackTokenizer tokenizer;
@@ -33,21 +34,29 @@ private:
     SymbolTable classSymbolTable;
     SymbolTable subroutineSymbolTable;
 
+    VMWriter vmWriter;
+
     std::ifstream inputStream;
-    std::ofstream outputStream;
+
+    int labelNumber;
+    std::string currentClass;
 
     void writeKeyWord();
     void writeSymbol();
     void writeIntConst();
     void writeStrConst();
     void writeVar(std::string type, Kind kind, bool isDeclaration, bool isClass);
+    void writeIdentifier();
     void writeType();
+    void writeKeyWordConst();
     bool isType();
     bool isStatement();
     bool isTerm();
     bool isKeyWordConstant();
     bool isOp();
     bool isUnaryOp();
+    std::string binaryOp();
+    std::string unaryOp();
     std::string kindToStr(Kind kind);
     Kind kindOf(std::string name);
     int indexOf(std::string name);

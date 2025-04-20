@@ -22,7 +22,7 @@ void JackAnalyzer::generateXML() {
 }
 
 void JackAnalyzer::generateXMLForSingleFile(std::filesystem::path inputPath) {
-    std::filesystem::path outputPath = inputPath.parent_path() / (inputPath.stem().string() + "N.xml");
+    std::filesystem::path outputPath = inputPath.parent_path() / (inputPath.stem().string() + ".vm");
     CompilationEngine compilationEngine(inputPath, outputPath);
     std::cout << "Beginning compilation of " << inputPath.filename().string() << std::endl;
     compilationEngine.compileClass();

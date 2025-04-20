@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <unordered_map>
 
-JackTokenizer::JackTokenizer(std::filesystem::path inputPath) {
+JackTokenizer::JackTokenizer(std::filesystem::path inputPath) : lineNumber(0) {
     input = std::ifstream(inputPath);
     if (!input) {
         throw std::runtime_error("JackTokenizer: the requested file could not be opened.");
@@ -22,12 +22,17 @@ bool JackTokenizer::hasMoreTokens() {
     return (!input.eof());
 }
 
+int JackTokenizer::getLineNumber() {
+    return lineNumber;
+}
+
 char JackTokenizer::getChar() {
     return input.peek();
 }
 
 void JackTokenizer::advanceChar() {
     currentChar = input.get();
+    if (currentChar == '\n') lineNumber++;
 }
 
 bool JackTokenizer::isSymbol(char c) {
